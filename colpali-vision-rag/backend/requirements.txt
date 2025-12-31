@@ -1,6 +1,6 @@
 # ColPali + Byaldi
 colpali-engine>=0.3.5
-byaldi>=0.1.0
+byaldi>=0.0.7
 
 # PyTorch (CPU for compatibility)
 torch>=2.2.0,<2.6.0
