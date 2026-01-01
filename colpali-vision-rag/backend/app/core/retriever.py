@@ -1,197 +1,146 @@
 """
-ColPali/ColSmol Retriever using colpali-engine directly.
-Handles document indexing and visual retrieval with support for ColSmol-500M.
+Multi-Model ColPali Retriever.
+Supports ColSmol-500M (Fast) and ColPali-v1.3 (Deep) with separate indexes.
 """
 
 import base64
 import json
 import torch
-import numpy as np
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from PIL import Image
 from pdf2image import convert_from_path
-from dataclasses import dataclass
 
 import config
 
-# Import from colpali-engine based on model type
-def get_model_and_processor(model_name: str, device: str):
-    """Load the appropriate model and processor based on model name."""
-    model_name_lower = model_name.lower()
+
+def load_model_and_processor(model_config: dict, device: str):
+    """Load model and processor based on configuration."""
+    model_class = model_config["model_class"]
+    processor_class = model_config["processor_class"]
+    model_name = model_config["name"]
     
-    if "colsmol" in model_name_lower or "smol" in model_name_lower:
-        # ColSmol uses ColIdefics3 from colpali-engine
+    print(f"📦 Loading {model_name} ({model_class})...")
+    
+    if model_class == "ColIdefics3":
         from colpali_engine.models import ColIdefics3, ColIdefics3Processor
-        print(f"📦 Loading ColSmol model (via ColIdefics3): {model_name}")
-        
         processor = ColIdefics3Processor.from_pretrained(model_name)
         model = ColIdefics3.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16 if device != "cpu" else torch.float32,
-            attn_implementation="eager"  # Use "flash_attention_2" if available
+            attn_implementation="eager"
         )
-        return model, processor, "colsmol"
-        
-    elif "colqwen2" in model_name_lower:
-        from colpali_engine.models import ColQwen2, ColQwen2Processor
-        print(f"📦 Loading ColQwen2 model: {model_name}")
-        
-        processor = ColQwen2Processor.from_pretrained(model_name)
-        model = ColQwen2.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16 if device != "cpu" else torch.float32,
-        )
-        return model, processor, "colqwen2"
-        
-    else:
-        # Default to ColPali
+    elif model_class == "ColPali":
         from colpali_engine.models import ColPali, ColPaliProcessor
-        print(f"📦 Loading ColPali model: {model_name}")
-        
         processor = ColPaliProcessor.from_pretrained(model_name)
         model = ColPali.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16 if device != "cpu" else torch.float32,
         )
-        return model, processor, "colpali"
-
-
-@dataclass
-class SearchResult:
-    """Search result container."""
-    doc_id: int
-    page_num: int
-    score: float
-    
-
-class ColPaliRetriever:
-    """Retriever supporting ColPali, ColQwen2, and ColSmol models."""
-    
-    _instance = None
-    _model = None
-    _processor = None
-    _model_type = None
-    _document_registry: Dict[str, Dict] = {}
-    _embeddings: List[torch.Tensor] = []  # Store page embeddings
-    _embed_to_doc: List[Dict] = []  # Map embedding index to doc/page
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._document_registry = {}
-            cls._instance._embeddings = []
-            cls._instance._embed_to_doc = []
-        return cls._instance
-    
-    def _ensure_model_loaded(self):
-        """Lazy load the model."""
-        if self._model is not None:
-            return
-        
-        print(f"🔄 Loading model: {config.COLPALI_MODEL}")
-        
-        self._model, self._processor, self._model_type = get_model_and_processor(
-            config.COLPALI_MODEL, 
-            config.COLPALI_DEVICE
+    elif model_class == "ColQwen2":
+        from colpali_engine.models import ColQwen2, ColQwen2Processor
+        processor = ColQwen2Processor.from_pretrained(model_name)
+        model = ColQwen2.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16 if device != "cpu" else torch.float32,
         )
-        self._model = self._model.eval()
-        
-        if config.COLPALI_DEVICE != "cuda":
-            self._model = self._model.to(config.COLPALI_DEVICE)
+    else:
+        raise ValueError(f"Unknown model class: {model_class}")
+    
+    model = model.eval()
+    if device != "cuda":
+        model = model.to(device)
+    
+    print(f"✅ {model_name} loaded successfully")
+    return model, processor
+
+
+class ModelIndex:
+    """Manages embeddings and index for a single model."""
+    
+    def __init__(self, mode: str, model_config: dict):
+        self.mode = mode
+        self.config = model_config
+        self.index_dir = model_config["index_dir"]
+        self.model = None
+        self.processor = None
+        self.embeddings: List[torch.Tensor] = []
+        self.embed_to_doc: List[Dict] = []
+        self.document_registry: Dict[str, Dict] = {}
         
         # Load existing index if present
         self._load_index()
-        
-        print(f"✅ Model ready ({self._model_type})")
     
     def _load_index(self):
         """Load existing index from disk."""
-        registry_path = config.INDEX_DIR / "registry.json"
-        embeddings_path = config.INDEX_DIR / "embeddings.pt"
-        mapping_path = config.INDEX_DIR / "embed_mapping.json"
+        registry_path = self.index_dir / "registry.json"
+        embeddings_path = self.index_dir / "embeddings.pt"
+        mapping_path = self.index_dir / "embed_mapping.json"
         
         if registry_path.exists():
-            self._document_registry = json.loads(registry_path.read_text())
-            
+            self.document_registry = json.loads(registry_path.read_text())
         if embeddings_path.exists():
-            self._embeddings = torch.load(embeddings_path, weights_only=False)
-            
+            self.embeddings = torch.load(embeddings_path, weights_only=False)
         if mapping_path.exists():
-            self._embed_to_doc = json.loads(mapping_path.read_text())
+            self.embed_to_doc = json.loads(mapping_path.read_text())
     
     def _save_index(self):
         """Save index to disk."""
-        config.INDEX_DIR.mkdir(parents=True, exist_ok=True)
+        self.index_dir.mkdir(parents=True, exist_ok=True)
         
-        registry_path = config.INDEX_DIR / "registry.json"
-        registry_path.write_text(json.dumps(self._document_registry, indent=2))
+        registry_path = self.index_dir / "registry.json"
+        registry_path.write_text(json.dumps(self.document_registry, indent=2))
         
-        if self._embeddings:
-            embeddings_path = config.INDEX_DIR / "embeddings.pt"
-            torch.save(self._embeddings, embeddings_path)
-            
-        mapping_path = config.INDEX_DIR / "embed_mapping.json"
-        mapping_path.write_text(json.dumps(self._embed_to_doc, indent=2))
+        if self.embeddings:
+            embeddings_path = self.index_dir / "embeddings.pt"
+            torch.save(self.embeddings, embeddings_path)
+        
+        mapping_path = self.index_dir / "embed_mapping.json"
+        mapping_path.write_text(json.dumps(self.embed_to_doc, indent=2))
     
-    def _embed_images(self, images: List[Image.Image]) -> List[torch.Tensor]:
-        """Generate embeddings for a list of images."""
-        embeddings = []
+    def ensure_model_loaded(self):
+        """Lazy load the model."""
+        if self.model is not None:
+            return
         
-        with torch.no_grad():
-            for img in images:
-                # All models (ColSmol/ColIdefics3, ColPali, ColQwen2) use process_images
-                batch = self._processor.process_images([img]).to(self._model.device)
-                emb = self._model(**batch).cpu()
-                embeddings.append(emb)
-        
-        return embeddings
+        self.model, self.processor = load_model_and_processor(
+            self.config, config.DEVICE
+        )
     
-    def _embed_query(self, query: str) -> torch.Tensor:
-        """Generate embedding for a query."""
-        with torch.no_grad():
-            # All models use process_queries
-            batch = self._processor.process_queries([query]).to(self._model.device)
-            return self._model(**batch).cpu()
+    def unload_model(self):
+        """Unload model to free memory."""
+        if self.model is not None:
+            del self.model
+            del self.processor
+            self.model = None
+            self.processor = None
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            print(f"🗑️ Unloaded {self.config['name']} to free memory")
     
-    def index_pdf(self, pdf_path: Path) -> Tuple[int, int]:
-        """Index a PDF document."""
-        self._ensure_model_loaded()
+    def index_images(self, doc_name: str, images: List[Image.Image], doc_pages_dir: Path) -> Tuple[int, int]:
+        """Index images for this model."""
+        self.ensure_model_loaded()
         
-        doc_name = pdf_path.stem
-        
-        # Convert PDF to images
-        print(f"📄 Converting PDF to images: {doc_name}")
-        images = convert_from_path(str(pdf_path), dpi=150)
         page_count = len(images)
+        doc_id = len(self.document_registry)
         
-        # Save page images for later retrieval
-        doc_pages_dir = config.PAGES_DIR / doc_name
-        doc_pages_dir.mkdir(parents=True, exist_ok=True)
-        
-        pil_images = []
-        for i, img in enumerate(images):
-            img_path = doc_pages_dir / f"page_{i+1}.png"
-            img.save(str(img_path), "PNG")
-            pil_images.append(img)
+        print(f"🔍 [{self.mode.upper()}] Indexing {page_count} pages...")
         
         # Generate embeddings
-        print(f"🔍 Indexing {page_count} pages...")
-        doc_id = len(self._document_registry)
+        start_idx = len(self.embeddings)
         
-        page_embeddings = self._embed_images(pil_images)
-        
-        # Store embeddings and mapping
-        start_idx = len(self._embeddings)
-        for i, emb in enumerate(page_embeddings):
-            self._embeddings.append(emb)
-            self._embed_to_doc.append({
-                "doc_id": doc_id,
-                "page_num": i + 1
-            })
+        with torch.no_grad():
+            for i, img in enumerate(images):
+                batch = self.processor.process_images([img]).to(self.model.device)
+                emb = self.model(**batch).cpu()
+                self.embeddings.append(emb)
+                self.embed_to_doc.append({
+                    "doc_id": doc_id,
+                    "page_num": i + 1
+                })
         
         # Update registry
-        self._document_registry[doc_name] = {
+        self.document_registry[doc_name] = {
             "id": doc_id,
             "name": doc_name,
             "page_count": page_count,
@@ -201,33 +150,29 @@ class ColPaliRetriever:
         }
         
         self._save_index()
+        print(f"✅ [{self.mode.upper()}] Indexed {doc_name}: {page_count} pages")
         
-        print(f"✅ Indexed {doc_name}: {page_count} pages")
         return doc_id, page_count
     
-    def search(
-        self, 
-        query: str, 
-        k: int = None,
-        include_images: bool = True
-    ) -> List[Dict]:
+    def search(self, query: str, k: int = None) -> List[Dict]:
         """Search for relevant pages."""
-        self._ensure_model_loaded()
+        self.ensure_model_loaded()
         k = k or config.TOP_K_RESULTS
         
-        if not self._embeddings:
+        if not self.embeddings:
             return []
         
-        print(f"🔍 Searching: '{query[:50]}...'")
+        print(f"🔍 [{self.mode.upper()}] Searching: '{query[:50]}...'")
         
         # Get query embedding
-        query_emb = self._embed_query(query)
+        with torch.no_grad():
+            batch = self.processor.process_queries([query]).to(self.model.device)
+            query_emb = self.model(**batch).cpu()
         
-        # Calculate similarities using multi-vector scoring
+        # Calculate similarities
         scores = []
-        for i, page_emb in enumerate(self._embeddings):
-            # All processors support score_multi_vector
-            sim = self._processor.score_multi_vector(query_emb, page_emb)[0][0].item()
+        for i, page_emb in enumerate(self.embeddings):
+            sim = self.processor.score_multi_vector(query_emb, page_emb)[0][0].item()
             scores.append((i, sim))
         
         # Sort by score and get top-k
@@ -237,20 +182,17 @@ class ColPaliRetriever:
         # Build results
         processed = []
         for idx, score in top_results:
-            mapping = self._embed_to_doc[idx]
+            mapping = self.embed_to_doc[idx]
             item = {
                 "doc_id": mapping["doc_id"],
                 "page_num": mapping["page_num"],
                 "score": float(score)
             }
             
-            if include_images:
-                image_b64 = self._get_page_image_base64(
-                    mapping["doc_id"], 
-                    mapping["page_num"]
-                )
-                if image_b64:
-                    item["image_base64"] = image_b64
+            # Load image
+            image_b64 = self._get_page_image_base64(mapping["doc_id"], mapping["page_num"])
+            if image_b64:
+                item["image_base64"] = image_b64
             
             processed.append(item)
         
@@ -258,7 +200,7 @@ class ColPaliRetriever:
     
     def _get_page_image_base64(self, doc_id: int, page_num: int) -> Optional[str]:
         """Get base64 encoded page image."""
-        for doc_name, doc_info in self._document_registry.items():
+        for doc_name, doc_info in self.document_registry.items():
             if doc_info["id"] == doc_id:
                 img_path = Path(doc_info["path"]) / f"page_{page_num}.png"
                 if img_path.exists():
@@ -274,29 +216,114 @@ class ColPaliRetriever:
                 "name": info["name"],
                 "page_count": info["page_count"]
             }
-            for info in self._document_registry.values()
+            for info in self.document_registry.values()
         ]
     
     def clear_index(self):
-        """Clear all indexed documents."""
+        """Clear index for this model."""
         import shutil
         
-        for d in [config.INDEX_DIR, config.PAGES_DIR]:
-            if d.exists():
-                shutil.rmtree(d)
-            d.mkdir(parents=True, exist_ok=True)
+        if self.index_dir.exists():
+            shutil.rmtree(self.index_dir)
+        self.index_dir.mkdir(parents=True, exist_ok=True)
         
-        self._document_registry = {}
-        self._embeddings = []
-        self._embed_to_doc = []
-        self._model = None
+        self.document_registry = {}
+        self.embeddings = []
+        self.embed_to_doc = []
         
-        print("🗑️ Index cleared")
+        print(f"🗑️ [{self.mode.upper()}] Index cleared")
+
+
+class MultiModelRetriever:
+    """Manages multiple model indexes."""
     
-    @property
-    def is_loaded(self) -> bool:
-        return self._model is not None
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+        
+        self.indexes: Dict[str, ModelIndex] = {}
+        for mode, model_config in config.MODELS.items():
+            self.indexes[mode] = ModelIndex(mode, model_config)
+        
+        self._initialized = True
+    
+    def index_pdf(self, pdf_path: Path) -> Dict[str, Tuple[int, int]]:
+        """
+        Index a PDF with all models.
+        Returns dict of mode -> (doc_id, page_count) for each model.
+        """
+        doc_name = pdf_path.stem
+        
+        # Convert PDF to images (shared across models)
+        print(f"📄 Converting PDF to images: {doc_name}")
+        images = convert_from_path(str(pdf_path), dpi=150)
+        page_count = len(images)
+        
+        # Save page images
+        doc_pages_dir = config.PAGES_DIR / doc_name
+        doc_pages_dir.mkdir(parents=True, exist_ok=True)
+        
+        pil_images = []
+        for i, img in enumerate(images):
+            img_path = doc_pages_dir / f"page_{i+1}.png"
+            img.save(str(img_path), "PNG")
+            pil_images.append(img)
+        
+        # Index with each model sequentially
+        results = {}
+        for mode, index in self.indexes.items():
+            try:
+                doc_id, page_count = index.index_images(doc_name, pil_images, doc_pages_dir)
+                results[mode] = (doc_id, page_count)
+                # Unload model to free memory before loading next
+                index.unload_model()
+            except Exception as e:
+                print(f"❌ [{mode.upper()}] Error indexing: {e}")
+                results[mode] = None
+        
+        return results
+    
+    def search(self, query: str, mode: str = "fast", k: int = None) -> List[Dict]:
+        """Search using the specified mode."""
+        if mode not in self.indexes:
+            raise ValueError(f"Unknown mode: {mode}. Use 'fast' or 'deep'.")
+        
+        return self.indexes[mode].search(query, k)
+    
+    def get_documents(self, mode: str = "fast") -> List[Dict]:
+        """Get list of documents indexed for a specific mode."""
+        if mode not in self.indexes:
+            return []
+        return self.indexes[mode].get_documents()
+    
+    def clear_all_indexes(self):
+        """Clear indexes for all models."""
+        import shutil
+        
+        # Also clear pages directory
+        if config.PAGES_DIR.exists():
+            shutil.rmtree(config.PAGES_DIR)
+        config.PAGES_DIR.mkdir(parents=True, exist_ok=True)
+        
+        for index in self.indexes.values():
+            index.clear_index()
+        
+        print("🗑️ All indexes cleared")
+    
+    def is_model_loaded(self, mode: str) -> bool:
+        """Check if a specific model is loaded."""
+        if mode not in self.indexes:
+            return False
+        return self.indexes[mode].model is not None
 
 
 # Singleton instance
-retriever = ColPaliRetriever()
+retriever = MultiModelRetriever()

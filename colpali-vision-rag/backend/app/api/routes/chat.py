@@ -10,11 +10,12 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 async def chat(request: ChatRequest):
     """
     Query the document collection and generate an answer.
+    Uses the specified mode (fast/deep) for retrieval.
     """
-    # Retrieve relevant pages
+    # Retrieve relevant pages using selected mode
     results = retriever.search(
         query=request.query,
-        include_images=request.include_images
+        mode=request.mode  # "fast" or "deep"
     )
     
     # Generate answer using LLM with vision
@@ -35,4 +36,8 @@ async def chat(request: ChatRequest):
         for r in results
     ]
     
-    return ChatResponse(answer=answer, sources=sources)
+    return ChatResponse(
+        answer=answer, 
+        sources=sources,
+        mode=request.mode
+    )

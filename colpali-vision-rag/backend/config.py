@@ -7,18 +7,37 @@ load_dotenv()
 # Directories
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
-INDEX_DIR = DATA_DIR / "index"
 UPLOADS_DIR = DATA_DIR / "uploads"
 PAGES_DIR = DATA_DIR / "pages"
 
-# Create directories
-for d in [DATA_DIR, INDEX_DIR, UPLOADS_DIR, PAGES_DIR]:
+# Create base directories
+for d in [DATA_DIR, UPLOADS_DIR, PAGES_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-# ColPali Configuration
-COLPALI_MODEL = os.getenv("COLPALI_MODEL", "vidore/colSmol-500M")
-COLPALI_DEVICE = os.getenv("COLPALI_DEVICE", "cpu")  # or "cuda"
-INDEX_NAME = "documents"
+# Device Configuration
+DEVICE = os.getenv("COLPALI_DEVICE", "cpu")  # or "cuda"
+
+# Dual Model Configuration
+MODELS = {
+    "fast": {
+        "name": "vidore/colSmol-500M",
+        "model_class": "ColIdefics3",
+        "processor_class": "ColIdefics3Processor",
+        "index_dir": DATA_DIR / "index_fast",
+        "display_name": "Fast (ColSmol-500M)"
+    },
+    "deep": {
+        "name": "vidore/colpali-v1.3",
+        "model_class": "ColPali",
+        "processor_class": "ColPaliProcessor",
+        "index_dir": DATA_DIR / "index_deep",
+        "display_name": "Deep (ColPali-v1.3)"
+    }
+}
+
+# Create index directories for each model
+for mode_config in MODELS.values():
+    mode_config["index_dir"].mkdir(parents=True, exist_ok=True)
 
 # OpenAI Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

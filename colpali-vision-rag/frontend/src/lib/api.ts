@@ -10,6 +10,9 @@ const getApiBase = () => {
 
 const API_BASE = getApiBase();
 
+// Types
+export type ModelMode = 'fast' | 'deep';
+
 export interface DocumentInfo {
     id: string;
     name: string;
@@ -26,9 +29,21 @@ export interface RetrievedPage {
 export interface ChatResponse {
     answer: string;
     sources: RetrievedPage[];
+    mode: ModelMode;
 }
 
-export async function uploadDocuments(files: File[]): Promise<{ success: boolean; message: string }> {
+export interface UploadResponse {
+    success: boolean;
+    message: string;
+    documents_added: number;
+    indexing_status: {
+        fast: Array<{ file: string; status: string; pages?: number }>;
+        deep: Array<{ file: string; status: string; pages?: number }>;
+    };
+}
+
+// API Functions
+export async function uploadDocuments(files: File[]): Promise<UploadResponse> {
     const formData = new FormData();
     files.forEach(file => formData.append('files', file));
 
@@ -40,8 +55,8 @@ export async function uploadDocuments(files: File[]): Promise<{ success: boolean
     return response.json();
 }
 
-export async function getDocuments(): Promise<{ documents: DocumentInfo[]; total: number }> {
-    const response = await fetch(`${API_BASE}/api/v1/documents`);
+export async function getDocuments(mode: ModelMode = 'fast'): Promise<{ documents: DocumentInfo[]; total: number }> {
+    const response = await fetch(`${API_BASE}/api/v1/documents?mode=${mode}`);
     return response.json();
 }
 
@@ -52,11 +67,11 @@ export async function clearDocuments(): Promise<{ success: boolean }> {
     return response.json();
 }
 
-export async function sendMessage(query: string): Promise<ChatResponse> {
+export async function sendMessage(query: string, mode: ModelMode = 'fast'): Promise<ChatResponse> {
     const response = await fetch(`${API_BASE}/api/v1/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, include_images: true }),
+        body: JSON.stringify({ query, mode, include_images: true }),
     });
     return response.json();
 }

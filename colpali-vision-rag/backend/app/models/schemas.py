@@ -1,9 +1,9 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 class HealthResponse(BaseModel):
     status: str
-    model_loaded: bool
+    models: dict  # Show status of each model
 
 class DocumentInfo(BaseModel):
     id: str
@@ -18,6 +18,7 @@ class UploadResponse(BaseModel):
     success: bool
     message: str
     documents_added: int
+    indexing_status: dict  # Status for each model
 
 class RetrievedPage(BaseModel):
     doc_id: int
@@ -27,11 +28,13 @@ class RetrievedPage(BaseModel):
 
 class ChatRequest(BaseModel):
     query: str
+    mode: Literal["fast", "deep"] = "fast"  # Model mode selection
     include_images: bool = True
 
 class ChatResponse(BaseModel):
     answer: str
     sources: List[RetrievedPage]
+    mode: str  # Which model was used
 
 class ClearResponse(BaseModel):
     success: bool

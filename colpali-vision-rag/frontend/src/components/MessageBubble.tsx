@@ -1,12 +1,13 @@
 'use client';
 
 import ReactMarkdown from 'react-markdown';
-import { RetrievedPage } from '@/lib/api';
+import { RetrievedPage, ModelMode } from '@/lib/api';
 
 interface Message {
     role: 'user' | 'assistant';
     content: string;
     sources?: RetrievedPage[];
+    mode?: ModelMode;
 }
 
 export function MessageBubble({ message }: { message: Message }) {
@@ -16,10 +17,22 @@ export function MessageBubble({ message }: { message: Message }) {
         <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
             <div
                 className={`max-w-[80%] rounded-lg px-4 py-3 ${isUser
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-700 text-gray-100'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-100'
                     }`}
             >
+                {/* Mode indicator for assistant messages */}
+                {!isUser && message.mode && (
+                    <div className="mb-2">
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${message.mode === 'fast'
+                                ? 'bg-green-600/30 text-green-400'
+                                : 'bg-purple-600/30 text-purple-400'
+                            }`}>
+                            {message.mode === 'fast' ? '⚡ Fast' : '🔍 Deep'}
+                        </span>
+                    </div>
+                )}
+
                 {/* Message content */}
                 <div className="prose prose-invert prose-sm max-w-none">
                     <ReactMarkdown>{message.content}</ReactMarkdown>
