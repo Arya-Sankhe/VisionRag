@@ -28,9 +28,10 @@ app.include_router(chat.router, prefix="/api/v1")
 
 @app.on_event("startup")
 async def startup():
-    print("🚀 Starting ColPali Vision RAG API")
-    print(f"   Model: {config.COLPALI_MODEL}")
-    print(f"   Device: {config.COLPALI_DEVICE}")
+    print("🚀 Starting ColPali Vision RAG API (Dual Model)")
+    print(f"   Fast Model: {config.MODELS['fast']['name']}")
+    print(f"   Deep Model: {config.MODELS['deep']['name']}")
+    print(f"   Device: {config.DEVICE}")
 
 
 if __name__ == "__main__":
