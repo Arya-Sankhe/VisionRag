@@ -1,4 +1,14 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// Dynamic API URL based on browser location (works for both localhost and VPS)
+const getApiBase = () => {
+    if (typeof window !== 'undefined') {
+        // In browser: use same hostname but port 8000
+        return `http://${window.location.hostname}:8000`;
+    }
+    // During SSR: use environment variable or default
+    return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+};
+
+const API_BASE = getApiBase();
 
 export interface DocumentInfo {
     id: string;
