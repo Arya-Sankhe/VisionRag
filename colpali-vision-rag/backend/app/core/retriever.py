@@ -21,15 +21,15 @@ def get_model_and_processor(model_name: str, device: str):
     model_name_lower = model_name.lower()
     
     if "colsmol" in model_name_lower or "smol" in model_name_lower:
-        # ColSmol uses transformers directly
-        from transformers import AutoProcessor, AutoModel
-        print(f"📦 Loading ColSmol model: {model_name}")
+        # ColSmol uses ColIdefics3 from colpali-engine
+        from colpali_engine.models import ColIdefics3, ColIdefics3Processor
+        print(f"📦 Loading ColSmol model (via ColIdefics3): {model_name}")
         
-        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-        model = AutoModel.from_pretrained(
+        processor = ColIdefics3Processor.from_pretrained(model_name)
+        model = ColIdefics3.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16 if device != "cpu" else torch.float32,
-            trust_remote_code=True
+            attn_implementation="eager"  # Use "flash_attention_2" if available
         )
         return model, processor, "colsmol"
         
@@ -140,18 +140,9 @@ class ColPaliRetriever:
         
         with torch.no_grad():
             for img in images:
-                if self._model_type == "colsmol":
-                    # ColSmol uses different processing
-                    inputs = self._processor(images=img, return_tensors="pt")
-                    inputs = {k: v.to(self._model.device) for k, v in inputs.items()}
-                    outputs = self._model(**inputs)
-                    # Get the image embeddings (last hidden state)
-                    emb = outputs.last_hidden_state.mean(dim=1).cpu()
-                else:
-                    # ColPali/ColQwen2 use process_images
-                    batch = self._processor.process_images([img]).to(self._model.device)
-                    emb = self._model(**batch).cpu()
-                
+                # All models (ColSmol/ColIdefics3, ColPali, ColQwen2) use process_images
+                batch = self._processor.process_images([img]).to(self._model.device)
+                emb = self._model(**batch).cpu()
                 embeddings.append(emb)
         
         return embeddings
@@ -159,16 +150,9 @@ class ColPaliRetriever:
     def _embed_query(self, query: str) -> torch.Tensor:
         """Generate embedding for a query."""
         with torch.no_grad():
-            if self._model_type == "colsmol":
-                # ColSmol query embedding
-                inputs = self._processor(text=query, return_tensors="pt", padding=True)
-                inputs = {k: v.to(self._model.device) for k, v in inputs.items()}
-                outputs = self._model(**inputs)
-                return outputs.last_hidden_state.mean(dim=1).cpu()
-            else:
-                # ColPali/ColQwen2
-                batch = self._processor.process_queries([query]).to(self._model.device)
-                return self._model(**batch).cpu()
+            # All models use process_queries
+            batch = self._processor.process_queries([query]).to(self._model.device)
+            return self._model(**batch).cpu()
     
     def index_pdf(self, pdf_path: Path) -> Tuple[int, int]:
         """Index a PDF document."""
@@ -239,20 +223,11 @@ class ColPaliRetriever:
         # Get query embedding
         query_emb = self._embed_query(query)
         
-        # Calculate similarities
+        # Calculate similarities using multi-vector scoring
         scores = []
         for i, page_emb in enumerate(self._embeddings):
-            # Compute similarity (dot product or cosine)
-            if self._model_type == "colsmol":
-                # Simple cosine similarity for ColSmol
-                sim = torch.nn.functional.cosine_similarity(
-                    query_emb.flatten().unsqueeze(0),
-                    page_emb.flatten().unsqueeze(0)
-                ).item()
-            else:
-                # Late interaction scoring for ColPali/ColQwen2
-                sim = self._processor.score_multi_vector(query_emb, page_emb)[0][0].item()
-            
+            # All processors support score_multi_vector
+            sim = self._processor.score_multi_vector(query_emb, page_emb)[0][0].item()
             scores.append((i, sim))
         
         # Sort by score and get top-k
