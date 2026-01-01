@@ -1,6 +1,6 @@
-# ColPali + Byaldi
-colpali-engine>=0.3.5
-byaldi>=0.0.7
+# ColPali + Byaldi (from git for ColSmol support)
+colpali-engine>=0.3.13
+git+https://github.com/AnswerDotAI/byaldi.git@main
 
 # PyTorch (CPU for compatibility)
 torch>=2.2.0,<2.6.0

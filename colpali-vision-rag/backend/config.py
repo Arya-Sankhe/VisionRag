@@ -16,7 +16,7 @@ for d in [DATA_DIR, INDEX_DIR, UPLOADS_DIR, PAGES_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ColPali Configuration
-COLPALI_MODEL = os.getenv("COLPALI_MODEL", "vidore/colpali-v1.2")
+COLPALI_MODEL = os.getenv("COLPALI_MODEL", "vidore/colSmol-500M")
 COLPALI_DEVICE = os.getenv("COLPALI_DEVICE", "cpu")  # or "cuda"
 INDEX_NAME = "documents"
 
